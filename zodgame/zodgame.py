@@ -1,8 +1,7 @@
 # encoding=utf8
-import io
+import os
 import re
 import sys
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer,encoding='utf-8')
 
 import undetected_chromedriver as uc
 from selenium.webdriver.support.ui import WebDriverWait
@@ -78,9 +77,9 @@ def zodgame_task(driver, formhash):
     for idx, a in enumerate(join_task_a):
         on_click = a.get_attribute("onclick")
         try:
-            function = re.search("""openNewWindow(.*?)\(\)""", on_click, re.S)[0]
+            function = re.search(r"""openNewWindow(.*?)\(\)""", on_click, re.S)[0]
             script = driver.find_element(By.XPATH, f'//script[contains(text(), "{function}")]').get_attribute("text")
-            task_url = re.search("""window.open\("(.*)", "newwindow"\)""", script, re.S)[1]
+            task_url = re.search(r"""window.open\("(.*)", "newwindow"\)""", script, re.S)[1]
             driver.execute_script(f"""window.open("https://zodgame.xyz/{task_url}")""")
             driver.switch_to.window(driver.window_handles[-1])
             try:
@@ -92,7 +91,7 @@ def zodgame_task(driver, formhash):
                 pass
 
             try:     
-                check_url = re.search("""showWindow\('check', '(.*)'\);""", on_click, re.S)[1]
+                check_url = re.search(r"""showWindow\('check', '(.*)'\);""", on_click, re.S)[1]
                 driver.get(f"https://zodgame.xyz/{check_url}")
                 WebDriverWait(driver, 240).until(
                     lambda x: len(x.find_elements(By.XPATH, '//p[contains(text(), "检查成功, 积分已经加入您的帐户中")]')) != 0 
@@ -113,49 +112,69 @@ def zodgame_task(driver, formhash):
 
     return success
 
+def parse_cookies(cookie_string):
+    cookie_string = cookie_string.strip()
+    if cookie_string.lower().startswith("cookie:"):
+        cookie_string = cookie_string[len("cookie:"):].strip()
+    cookies = []
+    for item in cookie_string.split(';'):
+        if not item.strip():
+            continue
+        name, separator, value = item.partition('=')
+        if not separator or not name.strip():
+            raise ValueError("Invalid Cookie format; copy the complete Cookie request header.")
+        cookies.append({"name": name.strip(), "value": value.strip()})
+    required = {"qhMq_2132_saltkey", "qhMq_2132_auth"}
+    if not required.issubset({cookie['name'] for cookie in cookies if cookie['value']}):
+        raise ValueError("Cookie must include nonempty qhMq_2132_saltkey and qhMq_2132_auth.")
+    return cookies
+
+
 def zodgame(cookie_string):
+    cookie_dict = parse_cookies(cookie_string)
     options = uc.ChromeOptions()
     options.add_argument("--disable-popup-blocking")
-    driver = uc.Chrome(driver_executable_path = """C:\SeleniumWebDrivers\ChromeDriver\chromedriver.exe""",
-                       browser_executable_path = """C:\Program Files\Google\Chrome\Application\chrome.exe""",
-                       options = options)
+    chrome_kwargs = {"options": options}
+    if os.environ.get("CHROME_BINARY"):
+        chrome_kwargs["browser_executable_path"] = os.environ["CHROME_BINARY"]
+    if os.environ.get("CHROMEDRIVER_BINARY"):
+        chrome_kwargs["driver_executable_path"] = os.environ["CHROMEDRIVER_BINARY"]
+    if os.environ.get("CHROME_VERSION"):
+        chrome_kwargs["version_main"] = int(os.environ["CHROME_VERSION"].split('.')[0])
+    if os.environ.get("ZODGAME_HEADLESS") == "1":
+        chrome_kwargs["headless"] = True
+    driver = uc.Chrome(**chrome_kwargs)
 
     # Load cookie
-    driver.get("https://zodgame.xyz/")
+    try:
+        driver.get("https://zodgame.xyz/")
+        driver.delete_all_cookies()
+        for cookie in cookie_dict:
+            if cookie["name"] in ["qhMq_2132_saltkey", "qhMq_2132_auth"]:
+                driver.add_cookie({
+                    "domain": "zodgame.xyz",
+                    "name": cookie["name"],
+                    "value": cookie["value"],
+                    "path": "/",
+                })
 
-    if cookie_string.startswith("cookie:"):
-        cookie_string = cookie_string[len("cookie:"):]
-    cookie_string = cookie_string.replace("/","%2")
-    cookie_dict = [ 
-        {"name" : x.split('=')[0].strip(), "value": x.split('=')[1].strip()} 
-        for x in cookie_string.split(';')
-    ]
+        driver.get("https://zodgame.xyz/")
 
-    driver.delete_all_cookies()
-    for cookie in cookie_dict:
-        if cookie["name"] in ["qhMq_2132_saltkey", "qhMq_2132_auth"]:
-            driver.add_cookie({
-                "domain": "zodgame.xyz",
-                "name": cookie["name"],
-                "value": cookie["value"],
-                "path": "/",
-            })
-    
-    driver.get("https://zodgame.xyz/")
-    
-    WebDriverWait(driver, 240).until(
-        lambda x: x.title != "Just a moment..."
-    )
-    assert len(driver.find_elements(By.XPATH, '//a[text()="用户名"]')) == 0, "Login fails. Please check your cookie."
-        
-    formhash = driver.find_element(By.XPATH, '//input[@name="formhash"]').get_attribute('value')
-    assert zodgame_checkin(driver, formhash) and zodgame_task(driver, formhash), "Checkin failed or task failed."
+        WebDriverWait(driver, 240).until(
+            lambda x: x.title != "Just a moment..."
+        )
+        assert len(driver.find_elements(By.XPATH, '//a[text()="用户名"]')) == 0, "Login fails. Please check your cookie."
 
-    driver.close()
-    driver.quit()
+        formhash = driver.find_element(By.XPATH, '//input[@name="formhash"]').get_attribute('value')
+        assert zodgame_checkin(driver, formhash) and zodgame_task(driver, formhash), "Checkin failed or task failed."
+    finally:
+        driver.quit()
     
 if __name__ == "__main__":
-    cookie_string = sys.argv[1]
-    assert cookie_string
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    cookie_string = os.environ.get("ZODGAME_COOKIE") or (sys.argv[1] if len(sys.argv) > 1 else "")
+    if not cookie_string:
+        raise SystemExit("Missing ZODGAME_COOKIE. Add it as a repository Actions secret.")
     
     zodgame(cookie_string)

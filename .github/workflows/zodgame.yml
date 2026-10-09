@@ -2,23 +2,53 @@ name: zodgame
 
 on:
   schedule:
-  - cron: "0 0 * * *"
-  
+    - cron: "0 0 * * *"
   push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
-    
+    branches: [main]
+    paths:
+      - .github/workflows/zodgame.yml
+      - zodgame/**
+      - tests/**
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zodgame-checkin
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
-    - uses: actions/checkout@v3
-    - name: Install requirements
-      run: |
-        pip3 install -r ./zodgame/requirements.txt
-    - name: Run 
-      run: |
-        python3 ./zodgame/zodgame.py "${{secrets.ZODGAME_COOKIE}}"
-    - uses: liskin/gh-workflow-keepalive@main
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Install Chrome and matching ChromeDriver
+        id: chrome
+        uses: browser-actions/setup-chrome@v2
+        with:
+          chrome-version: stable
+          install-chromedriver: true
+      - name: Install requirements
+        run: python -m pip install -r ./zodgame/requirements.txt setuptools
+      - name: Run offline regression tests
+        run: python -m unittest discover -s tests -v
+      - name: Run check-in
+        env:
+          ZODGAME_COOKIE: ${{ secrets.ZODGAME_COOKIE }}
+          CHROME_BINARY: ${{ steps.chrome.outputs.chrome-path }}
+          CHROMEDRIVER_BINARY: ${{ steps.chrome.outputs.chromedriver-path }}
+          CHROME_VERSION: ${{ steps.chrome.outputs.chrome-version }}
+        run: python ./zodgame/zodgame.py
+
+  workflow-keepalive:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - uses: liskin/gh-workflow-keepalive@v1
